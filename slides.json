@@ -1,0 +1,26 @@
+[
+  {
+    "type": "leaderboard",
+    "url": "https://viztarace.vgoneofficial.com/public/leaderboardtv",
+    "duration": 10000
+  },
+  {
+    "type": "video",
+    "src": "./assets/promo1.mp4",
+    "title": "",
+    "caption": ""
+  },
+  {
+    "type": "photo",
+    "src": "./assets/promo2.png",
+    "duration": 5000,
+    "title": "",
+    "caption": ""
+  },
+  {
+    "type": "video",
+    "src": "https://www.youtube.com/watch?v=OErndIcI8gE&list=RDOErndIcI8gE&start_radio=1",
+    "title": "",
+    "caption": ""
+  }
+]

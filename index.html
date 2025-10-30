@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Vizta Race Display</title>
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background-color: black;
+        overflow: hidden;
+        font-family: "Poppins", sans-serif;
+      }
+
+      iframe, video, img {
+        position: absolute;
+        width: 100%;
+        height: 100%;
+        border: none;
+        object-fit: cover;
+        transition: opacity 1s ease;
+      }
+
+      .hidden { opacity: 0; pointer-events: none; }
+      .visible { opacity: 1; }
+
+      .text-overlay {
+        position: absolute;
+        bottom: 60px;
+        left: 50%;
+        transform: translateX(-50%);
+        text-align: center;
+        color: white;
+        z-index: 98;
+        text-shadow: 0 0 10px rgba(0, 0, 0, 0.8);
+        transition: opacity 1s ease;
+      }
+
+      .text-overlay h2 {
+        font-size: 2rem;
+        font-weight: bold;
+        margin: 0;
+        color: #ffd700;
+      }
+
+      .text-overlay p {
+        font-size: 1.2rem;
+        margin-top: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <iframe id="leaderboardFrame" class="hidden" allowfullscreen></iframe>
+    <div id="mediaContainer" class="hidden"></div>
+    <div id="textOverlay" class="text-overlay hidden">
+      <h2 id="titleText"></h2>
+      <p id="captionText"></p>
+    </div>
+
+    <script>
+      const leaderboard = document.getElementById("leaderboardFrame");
+      const mediaContainer = document.getElementById("mediaContainer");
+      const textOverlay = document.getElementById("textOverlay");
+      const titleText = document.getElementById("titleText");
+      const captionText = document.getElementById("captionText");
+
+      let slides = [];
+      let currentIndex = 0;
+      let slideTimer = null;
+
+      // Konversi link drive ke direct link
+      function convertDriveLink(url) {
+        const match = url?.match(/\/d\/(.*?)\//);
+        return match && match[1]
+          ? `https://drive.google.com/uc?export=download&id=${match[1]}`
+          : url;
+      }
+
+      async function loadSlides() {
+        try {
+          const res = await fetch("./slides.json");
+          slides = await res.json();
+          showSlide();
+          // Auto reload JSON tiap 10 menit
+          setInterval(loadSlides, 10 * 60 * 1000);
+        } catch (err) {
+          console.error("❌ Gagal load slides.json:", err);
+          activateFallback();
+        }
+      }
+
+      function activateFallback() {
+        clearTimeout(slideTimer);
+        leaderboard.src = "https://viztarace.vgoneofficial.com/public/leaderboardtv";
+        leaderboard.classList.add("visible");
+        mediaContainer.classList.add("hidden");
+        textOverlay.classList.add("hidden");
+      }
+
+      function showSlide() {
+        if (!slides.length) return activateFallback();
+
+        clearTimeout(slideTimer);
+        const current = slides[currentIndex];
+        if (!current || !current.type) return nextSlide();
+
+        // Reset overlay
+        mediaContainer.innerHTML = "";
+        titleText.textContent = current.title || "";
+        captionText.textContent = current.caption || "";
+        textOverlay.classList.toggle("hidden", !(current.title || current.caption));
+
+        if (current.type === "leaderboard") {
+          const url = current.url || "https://viztarace.vgoneofficial.com/public/leaderboardtv";
+          leaderboard.src = url;
+          fadeSwitch(leaderboard, mediaContainer);
+          slideTimer = setTimeout(() => nextSlide(), current.duration || 15000);
+        } else {
+          fadeSwitch(mediaContainer, leaderboard);
+          const src = convertDriveLink(current.src);
+          if (!src) return nextSlide();
+
+          if (current.type === "video") {
+            if (!src.endsWith(".mp4") && !src.includes("drive.google.com"))
+              return nextSlide();
+
+            const video = document.createElement("video");
+            video.src = src;
+            video.autoplay = true;
+            video.muted = true;
+            video.playsInline = true;
+            video.preload = "auto";
+            video.style.width = "100%";
+            video.style.height = "100%";
+            video.style.objectFit = "cover";
+
+            video.onerror = () => {
+              console.warn("⚠️ Video gagal dimuat:", src);
+              nextSlide();
+            };
+
+            // autoplay fix
+            video.addEventListener("loadeddata", () => {
+              video.play().catch(() => {
+                console.warn("⚠️ Autoplay gagal, mencoba ulang...");
+                setTimeout(() => video.play().catch(() => nextSlide()), 1000);
+              });
+            });
+
+            video.addEventListener("ended", () => nextSlide());
+
+            mediaContainer.innerHTML = "";
+            mediaContainer.appendChild(video);
+            video.load();
+          } else if (current.type === "photo") {
+            if (!src.endsWith(".png")) return nextSlide();
+
+            const img = document.createElement("img");
+            img.src = src;
+            img.alt = "Promo Image";
+            img.onerror = () => {
+              console.warn("⚠️ Gambar gagal dimuat:", src);
+              nextSlide();
+            };
+            mediaContainer.innerHTML = "";
+            mediaContainer.appendChild(img);
+            slideTimer = setTimeout(() => nextSlide(), current.duration || 15000);
+          } else {
+            nextSlide();
+          }
+        }
+      }
+
+      // Transisi halus antar elemen
+      function fadeSwitch(showEl, hideEl) {
+        showEl.classList.add("visible");
+        showEl.classList.remove("hidden");
+        hideEl.classList.add("hidden");
+        hideEl.classList.remove("visible");
+      }
+
+      function nextSlide() {
+        currentIndex = (currentIndex + 1) % slides.length;
+        showSlide();
+      }
+
+      loadSlides();
+    </script>
+  </body>
+</html>
