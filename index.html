@@ -3,14 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-    <title>Vizta Race Display (Anti-Sleep)</title>
+    <title>Vizta Race Display (Anti-Sleep + Auto Refresh)</title>
     <meta http-equiv="ScreenOrientation" content="autoRotate:disabled">
     <style>
       html, body {
         margin: 0; padding: 0; height: 100%;
         background-color: #000; overflow: hidden;
         font-family: "Poppins", system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-        cursor: none; /* layar TV jadi bersih */
+        cursor: none; /* bersih di layar TV */
       }
       iframe, video, img {
         position: absolute; inset: 0;
@@ -20,7 +20,6 @@
       }
       .hidden { opacity: 0; pointer-events: none; }
       .visible { opacity: 1; }
-
       .text-overlay {
         position: absolute; bottom: 60px; left: 50%;
         transform: translateX(-50%);
@@ -30,12 +29,8 @@
       }
       .text-overlay h2 { font-size: 2rem; font-weight: 700; margin: 0; color: #ffd700; }
       .text-overlay p { font-size: 1.2rem; margin-top: 8px; }
-
-      /* Elemen penggerak halus (keep rendering frames) */
-      #ticker {
-        position: absolute; top: -1000px; left: -1000px; /* offscreen */
-        width: 1px; height: 1px; color: transparent; user-select: none;
-      }
+      /* Elemen “keep rendering” */
+      #ticker { position:absolute; top:-1000px; left:-1000px; width:1px; height:1px; color:transparent; user-select:none; }
     </style>
   </head>
   <body>
@@ -46,16 +41,20 @@
       <p id="captionText"></p>
     </div>
 
-    <!-- Video anti-sleep (fallback kalau Wake Lock nggak ada/ditolak).
-         Pakai file mini dari CDN NoSleep. Jika butuh offline, taruh file mp4 lokal dan ganti src. -->
+    <!-- Fallback video (muted loop) untuk perangkat yg menolak WakeLock -->
     <video id="antiSleepVideo" playsinline muted loop preload="auto" class="hidden"
            src="https://cdn.jsdelivr.net/gh/richtr/NoSleep.js@0.12.0/src/media/no-sleep.mp4"></video>
 
-    <!-- Elemen pemicu render -->
     <div id="ticker" aria-hidden="true"></div>
 
     <script>
-      /*** ====== ELEMEN UTAMA ====== ***/
+      /********** KONFIGURASI **********/
+      // Refresh keras seluruh halaman tiap X jam (ubah sesuai kebutuhan)
+      const HARD_REFRESH_EVERY_MS = 4 * 60 * 60 * 1000; // 4 jam
+      // Reload harian jam 03:00 untuk “bersih-bersih” memori
+      const DAILY_RELOAD_HOUR = 3;
+
+      /********** ELEMEN **********/
       const leaderboard = document.getElementById("leaderboardFrame");
       const mediaContainer = document.getElementById("mediaContainer");
       const textOverlay = document.getElementById("textOverlay");
@@ -68,9 +67,9 @@
       let currentIndex = 0;
       let slideTimer = null;
 
-      /*** ====== ANTI-SCREENSAVER LAYER ====== ***/
+      /********** WAKE LOCK + KEEP-ALIVE **********/
       let wakeLock = null;
-      let wakeLockSupported = 'wakeLock' in navigator;
+      const wakeLockSupported = 'wakeLock' in navigator;
       let lastKeepAlive = 0;
 
       async function requestWakeLock() {
@@ -79,7 +78,7 @@
           wakeLock = await navigator.wakeLock.request('screen');
           console.log("✅ Screen Wake Lock aktif");
           wakeLock.addEventListener('release', () => {
-            console.warn('⚠️ Wake Lock dilepas oleh sistem, coba ambil ulang…');
+            console.warn('⚠️ Wake Lock dilepas; coba ambil ulang…');
           });
           return true;
         } catch (err) {
@@ -89,35 +88,38 @@
       }
 
       async function ensureAwake() {
-        // 1) Coba Screen Wake Lock
+        // 1) Coba WakeLock
         let ok = false;
         if (wakeLockSupported) {
           if (!wakeLock) ok = await requestWakeLock(); else ok = true;
         }
-
-        // 2) Fallback: putar video mini muted loop (mirip NoSleep)
+        // 2) Fallback video muted loop
         if (!ok) {
           try {
             await antiSleepVideo.play();
             console.log('✅ Anti-sleep video berjalan');
           } catch (e) {
-            console.warn('⚠️ Autoplay video anti-sleep gagal; menunggu gesture pengguna/remote TV', e);
+            console.warn('⚠️ Autoplay video anti-sleep gagal; butuh 1x klik/remote', e);
           }
         }
       }
 
-      // Re-acquire jika tab berubah (beberapa TV melepas wakelock saat visibility change)
+      // Re-acquire saat tab kembali visible/focus (beberapa TV melepas wakelock)
       document.addEventListener('visibilitychange', async () => {
         if (document.visibilityState === 'visible') {
           wakeLock = null;
           await ensureAwake();
         }
       });
+      window.addEventListener('focus', async () => {
+        wakeLock = null;
+        await ensureAwake();
+      });
 
-      // Coba lagi berkala (jaga-jaga)
+      // Keep trying tiap 60 dtk
       setInterval(() => ensureAwake(), 60 * 1000);
 
-      // Upaya lain: update “ticker” tiap ~10 detik agar engine render tetap aktif
+      // Render tick ringan agar engine tidak idle
       function startTicker() {
         function tick(t) {
           if (t - lastKeepAlive > 10000) {
@@ -129,19 +131,15 @@
         requestAnimationFrame(tick);
       }
 
-      // Gesture dari remote/klik bantu mengaktifkan autoplay policy di sebagian device
+      // Gesture bantu lewati autoplay policy
       ['click','keydown','touchstart','pointerdown'].forEach(ev=>{
         window.addEventListener(ev, async () => {
-          if (antiSleepVideo.paused) {
-            try { await antiSleepVideo.play(); } catch {}
-          }
-          if (!wakeLock && wakeLockSupported) {
-            try { await requestWakeLock(); } catch {}
-          }
-        }, { once: false, passive: true });
+          if (antiSleepVideo.paused) { try { await antiSleepVideo.play(); } catch {} }
+          if (!wakeLock && wakeLockSupported) { try { await requestWakeLock(); } catch {} }
+        }, { passive: true });
       });
 
-      /*** ====== SLIDES ENGINE (punyamu) ====== ***/
+      /********** ENGINE SLIDES (punyamu) **********/
       function convertDriveLink(url) {
         const match = url?.match(/\/d\/(.*?)\//);
         return match && match[1]
@@ -155,7 +153,6 @@
           slides = await res.json();
           currentIndex = 0;
           showSlide();
-          // Auto reload JSON tiap 10 menit
           scheduleSlidesReload();
         } catch (err) {
           console.error("❌ Gagal load slides.json:", err);
@@ -163,10 +160,10 @@
         }
       }
 
-      let reloadTimer;
+      let reloadJsonTimer;
       function scheduleSlidesReload() {
-        clearTimeout(reloadTimer);
-        reloadTimer = setTimeout(loadSlides, 10 * 60 * 1000);
+        clearTimeout(reloadJsonTimer);
+        reloadJsonTimer = setTimeout(loadSlides, 10 * 60 * 1000); // 10 menit
       }
 
       function activateFallback() {
@@ -184,7 +181,7 @@
         const current = slides[currentIndex];
         if (!current || !current.type) return nextSlide();
 
-        // Reset overlay
+        // Overlay
         mediaContainer.innerHTML = "";
         titleText.textContent = current.title || "";
         captionText.textContent = current.caption || "";
@@ -201,49 +198,27 @@
           if (!src) return nextSlide();
 
           if (current.type === "video") {
-            if (!src.endsWith(".mp4") && !src.includes("drive.google.com"))
-              return nextSlide();
+            if (!src.endsWith(".mp4") && !src.includes("drive.google.com")) return nextSlide();
 
             const video = document.createElement("video");
-            video.src = src;
-            video.autoplay = true;
-            video.muted = true;
-            video.playsInline = true;
-            video.preload = "auto";
-            video.style.width = "100%";
-            video.style.height = "100%";
-            video.style.objectFit = "cover";
+            video.src = src; video.autoplay = true; video.muted = true; video.playsInline = true; video.preload = "auto";
+            video.style.width = "100%"; video.style.height = "100%"; video.style.objectFit = "cover";
 
-            video.onerror = () => {
-              console.warn("⚠️ Video gagal dimuat:", src);
-              nextSlide();
-            };
-
-            // autoplay fix
+            video.onerror = () => { console.warn("⚠️ Video gagal dimuat:", src); nextSlide(); };
             video.addEventListener("loadeddata", () => {
-              video.play().catch(() => {
-                console.warn("⚠️ Autoplay gagal, retry…");
-                setTimeout(() => video.play().catch(() => nextSlide()), 800);
-              });
+              video.play().catch(() => setTimeout(() => video.play().catch(nextSlide), 800));
             });
-
             video.addEventListener("ended", nextSlide);
 
             mediaContainer.innerHTML = "";
             mediaContainer.appendChild(video);
             video.load();
           } else if (current.type === "photo") {
-            // long image dwell; .png prefer, tapi izinkan .jpg/.jpeg juga
-            if (!(src.endsWith(".png") || src.endsWith(".jpg") || src.endsWith(".jpeg")))
-              return nextSlide();
+            if (!(src.endsWith(".png") || src.endsWith(".jpg") || src.endsWith(".jpeg"))) return nextSlide();
 
             const img = document.createElement("img");
-            img.src = src;
-            img.alt = "Slide Image";
-            img.onerror = () => {
-              console.warn("⚠️ Gambar gagal dimuat:", src);
-              nextSlide();
-            };
+            img.src = src; img.alt = "Slide Image";
+            img.onerror = () => { console.warn("⚠️ Gambar gagal dimuat:", src); nextSlide(); };
             mediaContainer.innerHTML = "";
             mediaContainer.appendChild(img);
             slideTimer = setTimeout(nextSlide, current.duration || 15000);
@@ -254,10 +229,8 @@
       }
 
       function fadeSwitch(showEl, hideEl) {
-        showEl.classList.add("visible");
-        showEl.classList.remove("hidden");
-        hideEl.classList.add("hidden");
-        hideEl.classList.remove("visible");
+        showEl.classList.add("visible"); showEl.classList.remove("hidden");
+        hideEl.classList.add("hidden"); hideEl.classList.remove("visible");
       }
 
       function nextSlide() {
@@ -265,26 +238,47 @@
         showSlide();
       }
 
-      /*** ====== BOOTSTRAP ====== ***/
-      (async function boot() {
-        startTicker();
-        await ensureAwake();
-        await loadSlides();
-      })();
+      /********** AUTO REFRESH / SELF-HEAL **********/
+      // 1) Refresh keras tiap X jam
+      setInterval(() => { location.reload(); }, HARD_REFRESH_EVERY_MS);
 
-      /*** ====== SAFETY NET: RELOAD HARIAN & NETWORK DROP HANDLING ====== ***/
-      // Reload halaman 1x sehari (jam 03:00) untuk “bersih-bersih” memori browser TV
+      // 2) Reload harian jam tertentu (03:00)
       function scheduleDailyReload() {
         const now = new Date();
         const next = new Date(now);
-        next.setHours(3, 0, 0, 0);
+        next.setHours(DAILY_RELOAD_HOUR, 0, 0, 0);
         if (next <= now) next.setDate(next.getDate() + 1);
         setTimeout(() => location.reload(), next - now);
       }
       scheduleDailyReload();
 
-      // Jika offline lama, coba auto-reload ketika online lagi
+      // 3) Jika offline lama, reload ketika online lagi
       window.addEventListener('online', () => location.reload());
+
+      // 4) Jika tak ada frame update terlalu lama (indikasi freeze), lakukan soft reload
+      let lastHeartbeat = Date.now();
+      setInterval(() => {
+        const now = Date.now();
+        if (now - lastHeartbeat > 5 * 60 * 1000) { // 5 menit tanpa heartbeat
+          console.warn('⚠️ Terindikasi idle/freeze, soft reload…');
+          location.reload();
+        }
+        lastHeartbeat = now;
+      }, 60 * 1000);
+
+      // Heartbeat dari rendering
+      function heartbeat() {
+        lastHeartbeat = Date.now();
+        requestAnimationFrame(heartbeat);
+      }
+
+      /********** BOOT **********/
+      (async function boot() {
+        startTicker();
+        heartbeat();
+        await ensureAwake();
+        await loadSlides();
+      })();
     </script>
   </body>
 </html>
