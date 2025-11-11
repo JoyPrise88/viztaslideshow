@@ -1,284 +1,239 @@
 <!DOCTYPE html>
 <html lang="id">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-    <title>Vizta Race Display (Anti-Sleep + Auto Refresh)</title>
-    <meta http-equiv="ScreenOrientation" content="autoRotate:disabled">
-    <style>
-      html, body {
-        margin: 0; padding: 0; height: 100%;
-        background-color: #000; overflow: hidden;
-        font-family: "Poppins", system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-        cursor: none; /* bersih di layar TV */
-      }
-      iframe, video, img {
-        position: absolute; inset: 0;
-        width: 100%; height: 100%;
-        border: none; object-fit: cover;
-        transition: opacity 1s ease;
-      }
-      .hidden { opacity: 0; pointer-events: none; }
-      .visible { opacity: 1; }
-      .text-overlay {
-        position: absolute; bottom: 60px; left: 50%;
-        transform: translateX(-50%);
-        text-align: center; color: white; z-index: 98;
-        text-shadow: 0 0 10px rgba(0,0,0,0.8);
-        transition: opacity 1s ease;
-      }
-      .text-overlay h2 { font-size: 2rem; font-weight: 700; margin: 0; color: #ffd700; }
-      .text-overlay p { font-size: 1.2rem; margin-top: 8px; }
-      /* Elemen “keep rendering” */
-      #ticker { position:absolute; top:-1000px; left:-1000px; width:1px; height:1px; color:transparent; user-select:none; }
-    </style>
-  </head>
-  <body>
-    <iframe id="leaderboardFrame" class="hidden" allowfullscreen></iframe>
-    <div id="mediaContainer" class="hidden"></div>
-    <div id="textOverlay" class="text-overlay hidden">
-      <h2 id="titleText"></h2>
-      <p id="captionText"></p>
-    </div>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Vizta Race Display (Full Anti-Sleep Mode)</title>
+  <meta http-equiv="ScreenOrientation" content="autoRotate:disabled">
+  <style>
+    html, body {
+      margin: 0; padding: 0; height: 100%;
+      background-color: #000;
+      overflow: hidden;
+      font-family: "Poppins", system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      cursor: none;
+    }
+    iframe, video, img {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      border: none; object-fit: cover;
+      transition: opacity 1s ease;
+    }
+    .hidden { opacity: 0; pointer-events: none; }
+    .visible { opacity: 1; }
+    .text-overlay {
+      position: absolute; bottom: 60px; left: 50%;
+      transform: translateX(-50%);
+      text-align: center; color: white; z-index: 98;
+      text-shadow: 0 0 10px rgba(0,0,0,0.8);
+      transition: opacity 1s ease;
+    }
+    .text-overlay h2 { font-size: 2rem; font-weight: 700; margin: 0; color: #ffd700; }
+    .text-overlay p { font-size: 1.2rem; margin-top: 8px; }
+    #ticker {
+      position:absolute; top:-9999px; left:-9999px;
+      width:1px; height:1px; color:transparent;
+    }
+  </style>
+</head>
+<body>
+  <iframe id="leaderboardFrame" class="hidden" allowfullscreen></iframe>
+  <div id="mediaContainer" class="hidden"></div>
+  <div id="textOverlay" class="text-overlay hidden">
+    <h2 id="titleText"></h2>
+    <p id="captionText"></p>
+  </div>
 
-    <!-- Fallback video (muted loop) untuk perangkat yg menolak WakeLock -->
-    <video id="antiSleepVideo" playsinline muted loop preload="auto" class="hidden"
-           src="https://cdn.jsdelivr.net/gh/richtr/NoSleep.js@0.12.0/src/media/no-sleep.mp4"></video>
+  <!-- Fallback anti-sleep video -->
+  <video id="antiSleepVideo" playsinline muted loop preload="auto"
+         src="https://cdn.jsdelivr.net/gh/richtr/NoSleep.js@0.12.0/src/media/no-sleep.mp4"
+         class="hidden"></video>
 
-    <div id="ticker" aria-hidden="true"></div>
+  <div id="ticker"></div>
 
-    <script>
-      /********** KONFIGURASI **********/
-      // Refresh keras seluruh halaman tiap X jam (ubah sesuai kebutuhan)
-      const HARD_REFRESH_EVERY_MS = 4 * 60 * 60 * 1000; // 4 jam
-      // Reload harian jam 03:00 untuk “bersih-bersih” memori
-      const DAILY_RELOAD_HOUR = 3;
+  <script>
+    /******** CONFIG ********/
+    const HARD_REFRESH_EVERY_MS = 4 * 60 * 60 * 1000; // 4 jam
+    const DAILY_RELOAD_HOUR = 3;
 
-      /********** ELEMEN **********/
-      const leaderboard = document.getElementById("leaderboardFrame");
-      const mediaContainer = document.getElementById("mediaContainer");
-      const textOverlay = document.getElementById("textOverlay");
-      const titleText = document.getElementById("titleText");
-      const captionText = document.getElementById("captionText");
-      const antiSleepVideo = document.getElementById("antiSleepVideo");
-      const ticker = document.getElementById("ticker");
+    const leaderboard = document.getElementById("leaderboardFrame");
+    const mediaContainer = document.getElementById("mediaContainer");
+    const textOverlay = document.getElementById("textOverlay");
+    const titleText = document.getElementById("titleText");
+    const captionText = document.getElementById("captionText");
+    const antiSleepVideo = document.getElementById("antiSleepVideo");
+    const ticker = document.getElementById("ticker");
 
-      let slides = [];
-      let currentIndex = 0;
-      let slideTimer = null;
+    let slides = [];
+    let currentIndex = 0;
+    let slideTimer = null;
+    let wakeLock = null;
+    let lastKeepAlive = 0;
 
-      /********** WAKE LOCK + KEEP-ALIVE **********/
-      let wakeLock = null;
-      const wakeLockSupported = 'wakeLock' in navigator;
-      let lastKeepAlive = 0;
-
-      async function requestWakeLock() {
-        if (!wakeLockSupported) return false;
+    /******** WAKE LOCK + ANTI SLEEP ********/
+    async function requestWakeLock() {
+      if ('wakeLock' in navigator) {
         try {
           wakeLock = await navigator.wakeLock.request('screen');
-          console.log("✅ Screen Wake Lock aktif");
+          console.log("✅ WakeLock aktif");
           wakeLock.addEventListener('release', () => {
-            console.warn('⚠️ Wake Lock dilepas; coba ambil ulang…');
+            console.warn('⚠️ WakeLock dilepas');
           });
-          return true;
-        } catch (err) {
-          console.warn("❌ Gagal minta Wake Lock:", err?.name || err, err?.message || '');
-          return false;
+        } catch (e) {
+          console.warn("⚠️ Gagal ambil WakeLock:", e);
         }
       }
+    }
 
-      async function ensureAwake() {
-        // 1) Coba WakeLock
-        let ok = false;
-        if (wakeLockSupported) {
-          if (!wakeLock) ok = await requestWakeLock(); else ok = true;
-        }
-        // 2) Fallback video muted loop
-        if (!ok) {
-          try {
-            await antiSleepVideo.play();
-            console.log('✅ Anti-sleep video berjalan');
-          } catch (e) {
-            console.warn('⚠️ Autoplay video anti-sleep gagal; butuh 1x klik/remote', e);
-          }
-        }
+    async function ensureAwake() {
+      // 1️⃣ Coba aktifkan WakeLock
+      if ('wakeLock' in navigator && !wakeLock) {
+        await requestWakeLock();
       }
 
-      // Re-acquire saat tab kembali visible/focus (beberapa TV melepas wakelock)
-      document.addEventListener('visibilitychange', async () => {
-        if (document.visibilityState === 'visible') {
-          wakeLock = null;
-          await ensureAwake();
-        }
-      });
-      window.addEventListener('focus', async () => {
-        wakeLock = null;
-        await ensureAwake();
-      });
+      // 2️⃣ Mainkan video kecil tersembunyi agar render tetap hidup
+      try {
+        await antiSleepVideo.play();
+        console.log("🎬 Anti-sleep video aktif");
+      } catch (e) {
+        console.warn("⚠️ Autoplay video ditolak:", e);
+      }
+    }
 
-      // Keep trying tiap 60 dtk
-      setInterval(() => ensureAwake(), 60 * 1000);
+    // Keep refreshing wake setiap 30 dtk
+    setInterval(() => ensureAwake(), 30000);
 
-      // Render tick ringan agar engine tidak idle
-      function startTicker() {
-        function tick(t) {
-          if (t - lastKeepAlive > 10000) {
-            ticker.textContent = String(Date.now());
-            lastKeepAlive = t;
-          }
-          requestAnimationFrame(tick);
+    // Ticker: fake render biar dianggap aktif
+    function startTicker() {
+      function tick(t) {
+        if (t - lastKeepAlive > 5000) {
+          ticker.textContent = Date.now();
+          lastKeepAlive = t;
         }
         requestAnimationFrame(tick);
       }
+      requestAnimationFrame(tick);
+    }
 
-      // Gesture bantu lewati autoplay policy
-      ['click','keydown','touchstart','pointerdown'].forEach(ev=>{
-        window.addEventListener(ev, async () => {
-          if (antiSleepVideo.paused) { try { await antiSleepVideo.play(); } catch {} }
-          if (!wakeLock && wakeLockSupported) { try { await requestWakeLock(); } catch {} }
-        }, { passive: true });
-      });
+    // Listener agar kalau fokus balik, wake lock diambil lagi
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') requestWakeLock();
+    });
 
-      /********** ENGINE SLIDES (punyamu) **********/
-      function convertDriveLink(url) {
-        const match = url?.match(/\/d\/(.*?)\//);
-        return match && match[1]
-          ? `https://drive.google.com/uc?export=download&id=${match[1]}`
-          : url;
-      }
+    /******** SLIDE ENGINE ********/
+    function convertDriveLink(url) {
+      const match = url?.match(/\/d\/(.*?)\//);
+      return match ? `https://drive.google.com/uc?export=download&id=${match[1]}` : url;
+    }
 
-      async function loadSlides() {
-        try {
-          const res = await fetch("./slides.json", { cache: "no-store" });
-          slides = await res.json();
-          currentIndex = 0;
-          showSlide();
-          scheduleSlidesReload();
-        } catch (err) {
-          console.error("❌ Gagal load slides.json:", err);
-          activateFallback();
-        }
-      }
-
-      let reloadJsonTimer;
-      function scheduleSlidesReload() {
-        clearTimeout(reloadJsonTimer);
-        reloadJsonTimer = setTimeout(loadSlides, 10 * 60 * 1000); // 10 menit
-      }
-
-      function activateFallback() {
-        clearTimeout(slideTimer);
-        leaderboard.src = "https://viztarace.vgoneofficial.com/public/leaderboardtv";
-        leaderboard.classList.add("visible");
-        mediaContainer.classList.add("hidden");
-        textOverlay.classList.add("hidden");
-      }
-
-      function showSlide() {
-        if (!slides?.length) return activateFallback();
-
-        clearTimeout(slideTimer);
-        const current = slides[currentIndex];
-        if (!current || !current.type) return nextSlide();
-
-        // Overlay
-        mediaContainer.innerHTML = "";
-        titleText.textContent = current.title || "";
-        captionText.textContent = current.caption || "";
-        textOverlay.classList.toggle("hidden", !(current.title || current.caption));
-
-        if (current.type === "leaderboard") {
-          const url = current.url || "https://viztarace.vgoneofficial.com/public/leaderboardtv";
-          leaderboard.src = url;
-          fadeSwitch(leaderboard, mediaContainer);
-          slideTimer = setTimeout(nextSlide, current.duration || 15000);
-        } else {
-          fadeSwitch(mediaContainer, leaderboard);
-          const src = convertDriveLink(current.src);
-          if (!src) return nextSlide();
-
-          if (current.type === "video") {
-            if (!src.endsWith(".mp4") && !src.includes("drive.google.com")) return nextSlide();
-
-            const video = document.createElement("video");
-            video.src = src; video.autoplay = true; video.muted = true; video.playsInline = true; video.preload = "auto";
-            video.style.width = "100%"; video.style.height = "100%"; video.style.objectFit = "cover";
-
-            video.onerror = () => { console.warn("⚠️ Video gagal dimuat:", src); nextSlide(); };
-            video.addEventListener("loadeddata", () => {
-              video.play().catch(() => setTimeout(() => video.play().catch(nextSlide), 800));
-            });
-            video.addEventListener("ended", nextSlide);
-
-            mediaContainer.innerHTML = "";
-            mediaContainer.appendChild(video);
-            video.load();
-          } else if (current.type === "photo") {
-            if (!(src.endsWith(".png") || src.endsWith(".jpg") || src.endsWith(".jpeg"))) return nextSlide();
-
-            const img = document.createElement("img");
-            img.src = src; img.alt = "Slide Image";
-            img.onerror = () => { console.warn("⚠️ Gambar gagal dimuat:", src); nextSlide(); };
-            mediaContainer.innerHTML = "";
-            mediaContainer.appendChild(img);
-            slideTimer = setTimeout(nextSlide, current.duration || 15000);
-          } else {
-            nextSlide();
-          }
-        }
-      }
-
-      function fadeSwitch(showEl, hideEl) {
-        showEl.classList.add("visible"); showEl.classList.remove("hidden");
-        hideEl.classList.add("hidden"); hideEl.classList.remove("visible");
-      }
-
-      function nextSlide() {
-        currentIndex = (currentIndex + 1) % slides.length;
+    async function loadSlides() {
+      try {
+        const res = await fetch("./slides.json", { cache: "no-store" });
+        slides = await res.json();
+        currentIndex = 0;
         showSlide();
+        setTimeout(loadSlides, 10 * 60 * 1000);
+      } catch (e) {
+        console.error("❌ Gagal load slides.json:", e);
+        activateFallback();
       }
+    }
 
-      /********** AUTO REFRESH / SELF-HEAL **********/
-      // 1) Refresh keras tiap X jam
-      setInterval(() => { location.reload(); }, HARD_REFRESH_EVERY_MS);
+    function activateFallback() {
+      leaderboard.src = "https://viztarace.vgoneofficial.com/public/leaderboardtv";
+      leaderboard.classList.add("visible");
+      mediaContainer.classList.add("hidden");
+      textOverlay.classList.add("hidden");
+    }
 
-      // 2) Reload harian jam tertentu (03:00)
-      function scheduleDailyReload() {
-        const now = new Date();
-        const next = new Date(now);
-        next.setHours(DAILY_RELOAD_HOUR, 0, 0, 0);
-        if (next <= now) next.setDate(next.getDate() + 1);
-        setTimeout(() => location.reload(), next - now);
-      }
-      scheduleDailyReload();
+    function showSlide() {
+      if (!slides?.length) return activateFallback();
 
-      // 3) Jika offline lama, reload ketika online lagi
-      window.addEventListener('online', () => location.reload());
+      clearTimeout(slideTimer);
+      const s = slides[currentIndex];
+      if (!s || !s.type) return nextSlide();
 
-      // 4) Jika tak ada frame update terlalu lama (indikasi freeze), lakukan soft reload
-      let lastHeartbeat = Date.now();
-      setInterval(() => {
-        const now = Date.now();
-        if (now - lastHeartbeat > 5 * 60 * 1000) { // 5 menit tanpa heartbeat
-          console.warn('⚠️ Terindikasi idle/freeze, soft reload…');
-          location.reload();
+      titleText.textContent = s.title || "";
+      captionText.textContent = s.caption || "";
+      textOverlay.classList.toggle("hidden", !(s.title || s.caption));
+
+      if (s.type === "leaderboard") {
+        leaderboard.src = s.url || "https://viztarace.vgoneofficial.com/public/leaderboardtv";
+        fadeSwitch(leaderboard, mediaContainer);
+        slideTimer = setTimeout(nextSlide, s.duration || 15000);
+      } else {
+        fadeSwitch(mediaContainer, leaderboard);
+        const src = convertDriveLink(s.src);
+        if (!src) return nextSlide();
+
+        if (s.type === "video") {
+          const vid = document.createElement("video");
+          vid.src = src; vid.autoplay = true; vid.muted = true; vid.loop = false; vid.playsInline = true;
+          vid.style.width = "100%"; vid.style.height = "100%"; vid.style.objectFit = "cover";
+          vid.onerror = nextSlide;
+          vid.onended = nextSlide;
+          mediaContainer.innerHTML = "";
+          mediaContainer.appendChild(vid);
+        } else if (s.type === "photo") {
+          const img = document.createElement("img");
+          img.src = src; img.onerror = nextSlide;
+          mediaContainer.innerHTML = "";
+          mediaContainer.appendChild(img);
+          slideTimer = setTimeout(nextSlide, s.duration || 15000);
+        } else {
+          nextSlide();
         }
-        lastHeartbeat = now;
-      }, 60 * 1000);
-
-      // Heartbeat dari rendering
-      function heartbeat() {
-        lastHeartbeat = Date.now();
-        requestAnimationFrame(heartbeat);
       }
+    }
 
-      /********** BOOT **********/
-      (async function boot() {
-        startTicker();
-        heartbeat();
-        await ensureAwake();
-        await loadSlides();
-      })();
-    </script>
-  </body>
+    function fadeSwitch(show, hide) {
+      show.classList.add("visible"); show.classList.remove("hidden");
+      hide.classList.add("hidden"); hide.classList.remove("visible");
+    }
+
+    function nextSlide() {
+      currentIndex = (currentIndex + 1) % slides.length;
+      showSlide();
+    }
+
+    /******** AUTO REFRESH ********/
+    // Refresh tiap 4 jam
+    setInterval(() => location.reload(), HARD_REFRESH_EVERY_MS);
+
+    // Reload jam 03.00
+    function scheduleDailyReload() {
+      const now = new Date();
+      const next = new Date(now);
+      next.setHours(DAILY_RELOAD_HOUR, 0, 0, 0);
+      if (next <= now) next.setDate(next.getDate() + 1);
+      setTimeout(() => location.reload(), next - now);
+    }
+    scheduleDailyReload();
+
+    // Reload saat online kembali
+    window.addEventListener('online', () => location.reload());
+
+    // Soft reload jika idle 5 menit
+    let lastHeartbeat = Date.now();
+    setInterval(() => {
+      const now = Date.now();
+      if (now - lastHeartbeat > 5 * 60 * 1000) {
+        console.warn("⚠️ Freeze terdeteksi, reload…");
+        location.reload();
+      }
+    }, 60000);
+    function heartbeat() {
+      lastHeartbeat = Date.now();
+      requestAnimationFrame(heartbeat);
+    }
+
+    /******** BOOT ********/
+    (async function boot() {
+      startTicker();
+      heartbeat();
+      await ensureAwake();
+      await loadSlides();
+    })();
+  </script>
+</body>
 </html>
